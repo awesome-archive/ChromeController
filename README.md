@@ -17,7 +17,8 @@ descripion json files.
 ```python
 import ChromeController
 
-with ChromeController.ChromeContext(binary="google-chrome") as cr:
+additional_options = ['--user-data-dir=/tmp/x']
+with ChromeController.ChromeContext(binary="google-chrome", additional_options=additional_options) as cr:
     
     # Do a blocking navigate to a URL, and get the page content as served by the remote
     # server, with no modification by local javascript (if applicable)
@@ -97,14 +98,14 @@ or object) are not validated, due to the complexity of properly constructing
 type validators for their semantics given the architecture (read: writing the
 validator in raw AST broke my brain).
 
-Tested mostly on python 3.5, 3.6, lightly on 3.4 and 3.7, all on linux. If you are 
+Tested mostly on python 3.5, 3.6, lightly on 3.8 and 3.7, all on linux. If you are 
 using python 2, please stahp. It works with normal chromium and on windows, 
 but that has only been very lightly used. My test-target is the 
 google-provided `chrome` binary.
 
 Note that this tool generates and manipulates the AST directly, so it is 
 EXTREMELY sensitive to implementation details. It is *probably* broken on 
-python > 3.7 or < 3.4.
+python > 3.8 or < 3.5.
 
 Transport layer (originally) from https://github.com/minektur/chrome_remote_shell
 

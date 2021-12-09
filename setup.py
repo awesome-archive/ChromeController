@@ -11,7 +11,7 @@ setup(
 	name="ChromeController",
 
 	# Version number (initial):
-	version="0.3.10",
+	version="0.3.26",
 
 	# Application author details:
 	author="Connor Wolf",
@@ -22,7 +22,11 @@ setup(
 	package_dir = {'ChromeController': 'ChromeController'},
 
 	# Bundle the protocol json files.
-	package_data={'ChromeController': ['protocols/*.json']},
+	package_data={
+		'ChromeController': [
+			'protocols/*.json',
+			'resources/evasions/*.js'
+		]},
 
 	# Details
 	url="https://github.com/fake-name/ChromeController",
@@ -47,4 +51,12 @@ setup(
 		'docopt',
 	# We need pywin32 on windows for proper process termination.
 	] + win_req,
+
+	classifiers                   = [
+		"Programming Language :: Python :: 3",
+		"Development Status :: 4 - Beta",
+		"Intended Audience :: Developers",
+		"Operating System :: POSIX :: Linux",
+	],
+
 )

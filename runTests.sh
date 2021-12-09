@@ -11,12 +11,12 @@ set -e
 # 	--cover-package=ChromeController \
 # 	tests.test_simple
 
-nosetests                            \
-	--with-coverage                  \
-	--exe                            \
-	--cover-package=ChromeController \
-	--nocapture                      \
-	tests.test_header_overrides
+# nosetests                            \
+# 	--with-coverage                  \
+# 	--exe                            \
+# 	--cover-package=ChromeController \
+# 	--nocapture                      \
+# 	tests.test_header_overrides
 
 
 # nosetests                            \
@@ -25,11 +25,16 @@ nosetests                            \
 # 	--cover-package=ChromeController \
 # 	tests.test_redirects
 
-# nosetests                            \
-# 	--with-coverage                  \
-# 	--exe                            \
-# 	--cover-package=ChromeController \
-# 	tests.test_tab_pool
+nosetests                            \
+	--with-coverage                  \
+	--exe                            \
+	--cover-package=ChromeController \
+	--stop                      \
+	tests
+	# --nocapture                      \
+	# tests.test_xhr_get
+	# tests.test_post
+	# tests.test_tab_pool
 
 # nosetests                            \
 # 	--with-coverage                  \
@@ -45,7 +50,7 @@ nosetests                            \
 	# tests.test_simple
 	# tests.test_selenium
 
-# coverage report --show-missing
+coverage report --show-missing
 
-# coverage erase
+coverage erase
 

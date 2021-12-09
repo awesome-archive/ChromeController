@@ -4,6 +4,7 @@ import os.path
 import sys
 import subprocess
 import pprint
+import types
 import json
 import base64
 import signal
@@ -22,8 +23,15 @@ from ChromeController.resources import js
 # We use the generated wrapper. If you want a different version, use the CLI interface to update.
 from ChromeController.Generator.Generated import ChromeRemoteDebugInterface as ChromeRemoteDebugInterface_base
 
-
 DEFAULT_TIMEOUT_SECS = 10
+
+class RemoteObject():
+	def __init__(self, object_meta):
+		self.object_meta = object_meta
+
+		# TODO: Allow retreiving/interacting with these.
+	def __repr__(self):
+		return "<(Unimplemented) RemoteObject for JS object: '%s'>" % (self.object_meta, )
 
 class ChromeRemoteDebugInterface(ChromeRemoteDebugInterface_base):
 	'''
@@ -34,6 +42,7 @@ class ChromeRemoteDebugInterface(ChromeRemoteDebugInterface_base):
 		binary                = None,
 		dbg_port              = None,
 		use_execution_manager = None,
+		additional_options    = [],
 		visible_size          = None,
 		disable_page          = False,
 		disable_dom           = False,
@@ -44,6 +53,7 @@ class ChromeRemoteDebugInterface(ChromeRemoteDebugInterface_base):
 			binary                = binary,
 			dbg_port              = dbg_port,
 			use_execution_manager = use_execution_manager,
+			additional_options    = additional_options,
 			*args, **kwargs)
 
 		if disable_page:
@@ -69,6 +79,8 @@ class ChromeRemoteDebugInterface(ChromeRemoteDebugInterface_base):
 			self.Emulation_setVisibleSize(*visible_size)
 		else:
 			self.Emulation_setVisibleSize(1024, 1366)
+
+		self.__new_tab_scripts = []
 
 		# cr_ver = self.Browser_getVersion()
 		# self.log.debug("Remote browser version info:")
@@ -104,21 +116,292 @@ class ChromeRemoteDebugInterface(ChromeRemoteDebugInterface_base):
 
 
 		ret_2 = self.Network_setExtraHTTPHeaders(headers = header_args)
-
 		return (ret_1, ret_2)
 
 
-	def __exec_js(self, script, args=None, **extra_params):
+	def __remove_default_members(self, js_object):
+
+		ret = []
+
+		# This is kind of horrible
+		for item in js_object:
+			if 'name' in item:
+				if item['name'] == '__defineGetter__':
+					continue
+				if item['name'] == '__defineSetter__':
+					continue
+				if item['name'] == '__lookupGetter__':
+					continue
+				if item['name'] == '__lookupSetter__':
+					continue
+				if item['name'] == '__proto__':
+					continue
+				if item['name'] == 'constructor':
+					continue
+				if item['name'] == 'hasOwnProperty':
+					continue
+				if item['name'] == 'isPrototypeOf':
+					continue
+				if item['name'] == 'propertyIsEnumerable':
+					continue
+				if item['name'] == 'toLocaleString':
+					continue
+				if item['name'] == 'toString':
+					continue
+				if item['name'] == 'valueOf':
+					continue
+				if item['name'] == 'ABORT_ERR':
+					continue
+				if item['name'] == 'DATA_CLONE_ERR':
+					continue
+				if item['name'] == 'INUSE_ATTRIBUTE_ERR':
+					continue
+				if item['name'] == 'INVALID_ACCESS_ERR':
+					continue
+				if item['name'] == 'INVALID_CHARACTER_ERR':
+					continue
+				if item['name'] == 'INVALID_MODIFICATION_ERR':
+					continue
+				if item['name'] == 'INVALID_NODE_TYPE_ERR':
+					continue
+				if item['name'] == 'INVALID_STATE_ERR':
+					continue
+				if item['name'] == 'NAMESPACE_ERR':
+					continue
+				if item['name'] == 'NETWORK_ERR':
+					continue
+				if item['name'] == 'NO_DATA_ALLOWED_ERR':
+					continue
+				if item['name'] == 'NO_MODIFICATION_ALLOWED_ERR':
+					continue
+				if item['name'] == 'NOT_FOUND_ERR':
+					continue
+				if item['name'] == 'NOT_SUPPORTED_ERR':
+					continue
+				if item['name'] == 'QUOTA_EXCEEDED_ERR':
+					continue
+				if item['name'] == 'SECURITY_ERR':
+					continue
+				if item['name'] == 'SYNTAX_ERR':
+					continue
+				if item['name'] == 'TIMEOUT_ERR':
+					continue
+				if item['name'] == 'TYPE_MISMATCH_ERR':
+					continue
+				if item['name'] == 'URL_MISMATCH_ERR':
+					continue
+				if item['name'] == 'VALIDATION_ERR':
+					continue
+				if item['name'] == 'WRONG_DOCUMENT_ERR':
+					continue
+				if item['name'] ==  'DOMSTRING_SIZE_ERR':
+					continue
+				if item['name'] ==  'HIERARCHY_REQUEST_ERR':
+					continue
+				if item['name'] ==  'INDEX_SIZE_ERR':
+					continue
+
+			ret.append(item)
+
+		return ret
+
+	def __unpack_object(self, object):
+		assert isinstance(object, dict), "Object values must be a dict! Passed %s (%s)" % (type(object), object)
+		ret = {}
+		for key, value in object.items():
+			assert isinstance(key, str)
+
+			if isinstance(value, str):
+				ret[key] = value
+			elif isinstance(value, int):
+				ret[key] = value
+			elif isinstance(value, float):
+				ret[key] = value
+			elif value is None:   # Dammit, NoneType isn't exposed
+				ret[key] = value
+			elif value in (True, False):
+				ret[key] = value
+			elif isinstance(value, dict):
+				ret[key] = self.__unpack_object(value)
+			else:
+				raise ValueError("Unknown type in object: %s (%s)" % (type(value), value))
+
+		return ret
+
+	def __decode_serialized_value(self, value):
+		assert 'type' in value,  "Missing 'type' key from value: '%s'" % (value, )
+
+		if 'get' in value and 'set' in value:
+			self.log.debug("Unserializable remote script object")
+			return RemoteObject(value['objectId'])
+
+		if value['type'] == 'object' and 'objectId' in value:
+			self.log.debug("Unserializable remote script object")
+			return RemoteObject(value['objectId'])
+
+		assert 'value' in value, "Missing 'value' key from value: '%s'" % (value, )
+
+		if value['type'] == 'number':
+			return float(value['value'])
+		if value['type'] == 'string':
+			return value['value']
+
+
+		if value['type'] == 'object':
+			return self.__unpack_object(value['value'])
+
+		# Special case for null/none objects
+		if (
+				    'subtype' in value
+				and
+				    value['subtype'] == 'null'
+				and
+				    value['type'] == 'object'
+				and
+				    value['value'] is None):
+			return None
+
+		self.log.warning("Unknown serialized javascript value of type %s", value['type'])
+		self.log.warning("Complete value: %s", value)
+
+		return value
+
+	def _unpack_xhr_resp(self, values):
+		ret = {}
+
+		# Handle single objects without all the XHR stuff.
+		# This seems to be a chrome 84 change.
+		if set(values.keys()) == set(['type', 'value']):
+			if values['type'] == 'object':
+				return self.__decode_serialized_value(values)
+
+		for entry in values:
+			# assert 'configurable' in entry, "'configurable' missing from entry (%s, %s)" % (entry, values)
+			# assert 'enumerable'   in entry, "'enumerable' missing from entry (%s, %s)"   % (entry, values)
+			# assert 'isOwn'        in entry, "'isOwn' missing from entry (%s, %s)"        % (entry, values)
+			assert 'name'         in entry, "'name' missing from entry (%s, %s)"         % (entry, values)
+			assert 'value'        in entry, "'value' missing from entry (%s, %s)"        % (entry, values)
+			# assert 'writable'     in entry, "'writable' missing from entry (%s, %s)"     % (entry, values)
+
+			if 'isOwn' in entry and entry['isOwn'] is False:
+				continue
+
+			assert entry['name'] not in ret
+			ret[entry['name']] = self.__decode_serialized_value(entry['value'])
+
+		return ret
+
+	def xhr_fetch(self, url, headers=None, post_data=None, post_type=None):
+		'''
+		Execute a XMLHttpRequest() for content at `url`. If
+		`headers` are specified, they must be a dict of string:string
+		keader:values. post_data must also be pre-encoded.
+
+		Note that this will be affected by the same-origin policy of the current
+		page, so it can fail if you are requesting content from another domain and
+		the current site has restrictive same-origin policies (which is very common).
 		'''
 
-		Execute the passed javascript statement, optionally with passed
+		'''
+		If you're thinking this is kind of a hack, well, it is.
+
+		We also cheat a bunch and use synchronous XMLHttpRequest()s, because it
+		SO much easier.
+		'''
+		js_script = '''
+		function (url, headers, post_data, post_type){
+
+			var req = new XMLHttpRequest();
+
+			// We use sync calls, since we want to wait until the call completes
+			// This will probably be depreciated at some point.
+			if (post_data)
+			{
+				req.open("POST", url, false);
+				if (post_type)
+					req.setRequestHeader("Content-Type", post_type);
+			}
+			else
+				req.open("GET", url, false);
+
+			if (headers)
+			{
+				let entries = Object.entries(headers);
+				for (let idx = 0; idx < entries.length; idx += 1)
+				{
+					req.setRequestHeader(entries[idx][0], entries[idx][1]);
+
+				}
+			}
+
+			if (post_data)
+				req.send(post_data);
+			else
+				req.send();
+
+			return {
+					url          : url,
+					headers      : headers,
+					resp_headers : req.getAllResponseHeaders(),
+					post         : post_data,
+					response     : req.responseText,
+					mimetype     : req.getResponseHeader("Content-Type"),
+					code         : req.status
+				};
+		}
+
+		'''
+
+
+		ret = self.execute_javascript_function(js_script, [url, headers, post_data, post_type])
+
+		# print()
+		# print()
+		# print("XHR Response")
+		# pprint.pprint(ret)
+		# print()
+		# print()
+
+		ret = self._unpack_xhr_resp(ret)
+		return ret
+		# if
+
+
+	def __unwrap_object_return(self, ret):
+		if "result" in ret and 'result' in ret['result']:
+			res = ret['result']['result']
+			if 'objectId' in res:
+				resp4 = self.Runtime_getProperties(res['objectId'])
+
+				if "result" in resp4 and 'result' in resp4['result']:
+					res_full = resp4['result']['result']
+
+					return self.__remove_default_members(res_full)
+
+			# Direct POD type return, just use it directly.
+			if "type" in res and "value" in res:
+				return res
+
+		self.log.error("Failed fetching results from call!")
+		return ret
+
+	def __exec_js(self, script, should_call=False, args=None):
+		'''
+
+		Execute the passed javascript function/statement, optionally with passed
 		arguments.
+
+		Note that if args is not False, or should_call is True the passed script
+		will be treated as a function definition and called via
+		`(script).apply(null, args)`. Otherwise, the passed script will simply
+		be evaluated.
 
 		Note that if `script` is not a function, it must be a single statement.
 		The presence of semicolons not enclosed in a bracket scope will produce
 		an error.
 
 		'''
+
 
 		if args is None:
 			args = {}
@@ -135,16 +418,21 @@ class ChromeRemoteDebugInterface(ChromeRemoteDebugInterface_base):
 		#       function.c_str(),
 		#       json.c_str());
 
-		expression = "({}).apply(null, [null, {}, {}])".format(
-				js.kCallFunctionScript,
-				script,
-				json.dumps(args)
-			)
+		if args or should_call:
+			expression = "({script}).apply(null, JSON.parse({args}))".format(
+					script=script,
+					args=repr(json.dumps(args))
+				)
+		else:
+			expression = "({script})".format(
+					script=script,
+				)
 
-		resp3 = self.Runtime_evaluate(expression=expression, **extra_params)
+		resp3 = self.Runtime_evaluate(expression=expression, returnByValue=True)
 
-		return resp3
+		resp4 = self.__unwrap_object_return(resp3)
 
+		return resp4
 
 
 
@@ -384,12 +672,28 @@ class ChromeRemoteDebugInterface(ChromeRemoteDebugInterface_base):
 		# elem = self.find_element("//a".format(url))
 		# print(elem)
 
-	def execute_javascript(self, *args, **kwargs):
+	def execute_javascript_statement(self, script):
 		'''
 		Execute a javascript string in the context of the browser tab.
+		This only works for simple JS statements. More complex usage should
+		be via execute_javascript_function().
+
+		This can also be used to interrogate the JS interpreter, as simply passing
+		variable names of interest will return the variable value.
 		'''
 
-		ret = self.__exec_js(*args, **kwargs)
+		ret = self.__exec_js(script=script)
+		return ret
+
+	def execute_javascript_function(self, script, args=None):
+		'''
+		Execute a javascript function in the context of the browser tab.
+
+		The passed script must be a single function definition, which will
+		be called via ({script}).apply(null, {args}).
+		'''
+
+		ret = self.__exec_js(script=script, should_call=True, args=args)
 		return ret
 
 	def find_element(self, search):
@@ -442,18 +746,22 @@ class ChromeRemoteDebugInterface(ChromeRemoteDebugInterface_base):
 		assert 'searchId' in res['result']
 		searchid = res['result']['searchId']
 		res_cnt  = res['result']['resultCount']
-		self.log.debug("%s", res)
-		self.log.debug("%s", searchid)
+		self.log.info("res -> %s", res)
+		self.log.info("searchid -> %s", searchid)
 
 		if res_cnt == 0:
-			return None
+			return []
 
 		items = self.DOM_getSearchResults(searchId=searchid, fromIndex=0, toIndex=res_cnt)
 
-		self.log.debug("Results:")
-		self.log.debug("%s", items)
+		self.log.info("Results:")
+		self.log.info("items -> %s", items)
 
-		# DOM_getSearchResults
+		assert 'result' in items
+		assert 'nodeIds' in items['result']
+		node_ids  = items['result']['nodeIds']
+
+		return node_ids
 
 
 	def click_element(self, contains_url):
@@ -659,23 +967,18 @@ class ChromeRemoteDebugInterface(ChromeRemoteDebugInterface_base):
 			while 1:
 				if time.time() - start_time > max_wait_timeout:
 					self.log.debug("Page was not idle after waiting %s seconds. Giving up and extracting content now.", max_wait_timeout)
-				self.transport.recv_filtered(filter_funcs.wait_for_methods(target_events),
-					tab_key=self.tab_id, timeout=dom_idle_requirement_secs)
+					break
+				self.transport.recv_filtered(
+						filter_funcs.wait_for_methods(target_events),
+						tab_key = self.tab_id,
+						timeout = dom_idle_requirement_secs
+					)
 
 		except ChromeResponseNotReceived:
 			# We timed out, the DOM is probably idle.
 			pass
 
-
-
-		# We have to find the DOM root node ID
-		dom_attr = self.DOM_getDocument(depth=-1, pierce=False)
-		assert 'result' in dom_attr
-		assert 'root' in dom_attr['result']
-		assert 'nodeId' in dom_attr['result']['root']
-
-		# Now, we have the root node ID.
-		root_node_id = dom_attr['result']['root']['nodeId']
+		root_node_id = self.get_dom_root_id()
 
 		# Use that to get the HTML for the specified node
 		response = self.DOM_getOuterHTML(nodeId=root_node_id)
@@ -707,7 +1010,6 @@ class ChromeRemoteDebugInterface(ChromeRemoteDebugInterface_base):
 
 		Roughly, this corresponds to the javascript `DOMContentLoaded` event,
 		meaning the dom for the page is ready.
-
 
 		Internals:
 
@@ -767,5 +1069,146 @@ class ChromeRemoteDebugInterface(ChromeRemoteDebugInterface_base):
 
 			return resp['params']
 
+	def new_tab(self, *args, **kwargs):
 
+		tab = super().new_tab(*args, **kwargs)
+
+		for script in self.__new_tab_scripts:
+			tab.Page_addScriptToEvaluateOnNewDocument(script)
+		return tab
+
+
+	def install_evasions(self):
+		'''
+		Load headless detection evasions from the puppeteer-extra repository (
+		https://github.com/berstend/puppeteer-extra/tree/master/packages/puppeteer-extra-plugin-stealth/evasions).
+
+		'''
+		from ChromeController.resources import evasions
+
+		scripts = evasions.load_evasions()
+
+
+		self.__new_tab_scripts.extend(scripts.values())
+
+		for script, contents in scripts.items():
+
+			print("Loading '%s'" % script)
+			ret = self.Page_addScriptToEvaluateOnNewDocument(contents)
+			pprint.pprint(ret)
+
+			ret2 = self.execute_javascript_function("function()" + contents)
+			pprint.pprint(ret2)
+
+			# ret3 = self.execute_javascript_statement(contents)
+			# pprint.pprint(ret3)
+
+
+
+
+
+
+	def scroll_page(self, scroll_y_delta, scroll_x_delta=0, mouse_pos_x=10, mouse_pos_y=10):
+		'''
+		Inject a synthezised mouse scroll event into the page.
+
+		Positive Y scroll means "down" on the page. The mouse position is where the
+		virtual mouse pointer is placed when it emits the scroll event.
+
+		Note that this returns immediately, and the browser takes a short period of time
+		to actually perform the scroll (and for any onscroll() events to be triggered.)
+
+		Additionally, scroll events are delta relatve to the current viewport. Repeated
+		calls with the same scroll delta will incrementally move the viewport in the
+		chosen direction.
+		'''
+
+		self.Input_dispatchMouseEvent(
+				type        = 'mouseWheel',
+				x           = mouse_pos_x,
+				y           = mouse_pos_y,
+				deltaX      = scroll_x_delta,
+				deltaY      = scroll_y_delta,
+				pointerType = 'mouse',
+			)
+
+
+	def get_dom_root_id(self):
+		'''
+		Get the NodeID for the DOM Root.
+
+		This assumes the page has fully loaded.
+		'''
+
+
+
+		# We have to find the DOM root node ID
+		dom_attr = self.DOM_getDocument(depth=-1, pierce=False)
+		assert 'result' in dom_attr
+		assert 'root' in dom_attr['result']
+		assert 'nodeId' in dom_attr['result']['root']
+
+		# Now, we have the root node ID.
+		root_node_id = dom_attr['result']['root']['nodeId']
+
+		return root_node_id
+
+	def get_dom_item_center_coords(self, dom_object_id):
+		'''
+		Given a DOM object ID, scroll it into view (if needed), and
+		return it's center point coordinates.
+		'''
+
+		# Scroll the dom object into view
+		self.DOM_scrollIntoViewIfNeeded(nodeId=dom_object_id)
+
+
+		res = self.DOM_getContentQuads(nodeId=dom_object_id)
+
+		assert 'result' in res
+		assert 'quads' in res['result']
+
+		quads = res['result']['quads']
+
+		if not quads:
+			return []
+
+		p1_x, p1_y, p2_x, p2_y, p3_x, p3_y, p4_x, p4_y = quads[0]
+
+
+		max_x = max([p1_x, p2_x, p3_x, p4_x])
+		max_y = max([p1_y, p2_y, p3_y, p4_y])
+
+		min_x = min([p1_x, p2_x, p3_x, p4_x])
+		min_y = min([p1_y, p2_y, p3_y, p4_y])
+
+		half_x = (max_x - min_x) / 2
+		half_y = (max_y - min_y) / 2
+
+		return min_x + half_x, min_y + half_y
+
+
+	def click_item_at_coords(self, x_pos, y_pos):
+		'''
+		Use the input api to generate a mouse click event at the specified coordinates.
+
+		Note that if this generates a navigation event, it will not wait for that navigation
+		to complete before returning.
+
+		'''
+
+		self.Input_dispatchMouseEvent(
+			type='mousePressed',
+			x = x_pos,
+			y = y_pos,
+			button = 'left',
+			clickCount=1,
+		)
+		self.Input_dispatchMouseEvent(
+			type='mouseReleased',
+			x = x_pos,
+			y = y_pos,
+			button = 'left',
+			clickCount=1,
+		)
 
